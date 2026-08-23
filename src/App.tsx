@@ -20,7 +20,7 @@ function App() {
           <Vehicle position={[0, 5, 0]}>
             <SedanModel />
           </Vehicle>
-          
+
           {/* Visual-only reference model without physics */}
           <group position={[4, 0, 0]}>
             <SedanModel />

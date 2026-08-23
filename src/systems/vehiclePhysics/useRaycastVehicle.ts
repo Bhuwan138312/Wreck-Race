@@ -6,6 +6,7 @@ import * as THREE from 'three';
 export interface WheelConfig {
   position: THREE.Vector3; // Local connection point on chassis
   radius: number;
+  isFrontWheel?: boolean;
   meshRef?: RefObject<THREE.Object3D | null>;
 }
 
@@ -50,6 +51,22 @@ export function useRaycastVehicle(
     if (config.debugLinesRef && config.debugLinesRef.current) {
       debugLinePositions = config.debugLinesRef.current.geometry.attributes.position.array as Float32Array;
     }
+
+    // Calculate common velocity variables
+    const localForward = new THREE.Vector3(0, 0, 1);
+    const worldForward = localForward.clone().applyQuaternion(chassisQuat);
+    const velocity = chassis.linvel();
+    const velocityVec = new THREE.Vector3(velocity.x, velocity.y, velocity.z);
+    const forwardSpeed = velocityVec.dot(worldForward);
+
+    // Calculate target steering angle for visual animation
+    let targetSteeringAngle = 0;
+    const maxSteeringAngle = Math.PI / 6; // 30 degrees
+    if (config.controls && config.controls.current) {
+       if (config.controls.current.left) targetSteeringAngle = maxSteeringAngle;
+       if (config.controls.current.right) targetSteeringAngle = -maxSteeringAngle;
+    }
+    const visualSteeringSpeed = 8.0;
 
     // For each wheel
     for (let i = 0; i < config.wheels.length; i++) {
@@ -126,9 +143,29 @@ export function useRaycastVehicle(
         );
       }
 
-      // Update visual wheel position
+      // Update visual wheel position, steering, and rotation
       if (wheel.meshRef && wheel.meshRef.current) {
-        wheel.meshRef.current.position.y = wheel.position.y + wheel.radius - hitDistance;
+        const mesh = wheel.meshRef.current;
+        
+        // Ensure proper Euler order so spinning (X) happens around the steered axis (Y)
+        if (mesh.rotation.order !== 'YXZ') {
+          mesh.rotation.order = 'YXZ';
+        }
+
+        mesh.position.y = wheel.position.y + wheel.radius - hitDistance;
+        
+        // Visual steering
+        if (wheel.isFrontWheel) {
+           mesh.rotation.y = THREE.MathUtils.lerp(
+             mesh.rotation.y, 
+             targetSteeringAngle, 
+             visualSteeringSpeed * world.timestep
+           );
+        }
+
+        // Spin the wheel based on actual forward speed
+        const angularVelocity = forwardSpeed / wheel.radius;
+        mesh.rotation.x += angularVelocity * world.timestep;
       }
 
       // Update debug raycast lines
@@ -151,15 +188,6 @@ export function useRaycastVehicle(
     // --- Basic Arcade Driving Controls ---
     if (config.controls && config.controls.current) {
       const { forward, backward, left, right } = config.controls.current;
-      
-      // Calculate forward direction in world space (+Z is forward for this car model)
-      const localForward = new THREE.Vector3(0, 0, 1);
-      const worldForward = localForward.clone().applyQuaternion(chassisQuat);
-      
-      // Calculate current forward speed
-      const velocity = chassis.linvel();
-      const velocityVec = new THREE.Vector3(velocity.x, velocity.y, velocity.z);
-      const forwardSpeed = velocityVec.dot(worldForward);
       
       const maxForwardSpeed = 15;
       const maxReverseSpeed = -8;

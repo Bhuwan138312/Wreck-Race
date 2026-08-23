@@ -32,8 +32,8 @@ export function Vehicle({ children, ...props }: VehicleProps) {
 
   useRaycastVehicle(chassisRef, {
     wheels: [
-      { position: new THREE.Vector3(0.3, 0.3, 0.66), radius: 0.3, meshRef: wheelRefs[0] },   // Front Left
-      { position: new THREE.Vector3(-0.3, 0.3, 0.66), radius: 0.3, meshRef: wheelRefs[1] },  // Front Right
+      { position: new THREE.Vector3(0.3, 0.3, 0.66), radius: 0.3, isFrontWheel: true, meshRef: wheelRefs[0] },   // Front Left
+      { position: new THREE.Vector3(-0.3, 0.3, 0.66), radius: 0.3, isFrontWheel: true, meshRef: wheelRefs[1] },  // Front Right
       { position: new THREE.Vector3(0.3, 0.3, -0.66), radius: 0.3, meshRef: wheelRefs[2] },  // Rear Left
       { position: new THREE.Vector3(-0.3, 0.3, -0.66), radius: 0.3, meshRef: wheelRefs[3] }, // Rear Right
     ],
