@@ -52,19 +52,19 @@ export function Vehicle({ children, ...props }: VehicleProps) {
         colliders={false}
         mass={1}
         linearDamping={0.3}
-        angularDamping={0.6}
-        enabledRotations={[false, true, false]}
+        angularDamping={1.2}
+        enabledRotations={[true, true, true]}
         position={props.position}
         rotation={props.rotation}
       >
         {/* Adjusted collider to provide clearance for the wheels */}
         <CuboidCollider args={[0.35, 0.20, 0.8]} position={[0, 0.45, 0]} />
         
-        {/* Physical wheel colliders to act as a hard stop against the ground */}
-        <BallCollider args={[0.3]} position={[0.3, 0.3, 0.66]} friction={1.5} restitution={0} />
-        <BallCollider args={[0.3]} position={[-0.3, 0.3, 0.66]} friction={1.5} restitution={0} />
-        <BallCollider args={[0.3]} position={[0.3, 0.3, -0.66]} friction={1.5} restitution={0} />
-        <BallCollider args={[0.3]} position={[-0.3, 0.3, -0.66]} friction={1.5} restitution={0} />
+        {/* Physical wheel colliders to act as a hard stop against the ground. Friction is 0 so they slide over bumps instead of snagging. */}
+        <BallCollider args={[0.3]} position={[0.3, 0.3, 0.66]} friction={0} restitution={0} />
+        <BallCollider args={[0.3]} position={[-0.3, 0.3, 0.66]} friction={0} restitution={0} />
+        <BallCollider args={[0.3]} position={[0.3, 0.3, -0.66]} friction={0} restitution={0} />
+        <BallCollider args={[0.3]} position={[-0.3, 0.3, -0.66]} friction={0} restitution={0} />
 
         {React.cloneElement(children as React.ReactElement<any>, { wheelRefs })}
       </RigidBody>

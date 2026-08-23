@@ -6,11 +6,13 @@ import { Vehicle } from './components/vehicle/Vehicle';
 import { SedanModel } from './components/vehicle/SedanModel';
 import { Suspense } from 'react';
 import { Physics } from '@react-three/rapier';
+import { Speedometer } from './components/ui/Speedometer';
 
 function App() {
   return (
-    <Canvas shadows camera={{ position: [5, 5, 10], fov: 50 }}>
-      {/* Environment */}
+    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
+      <Canvas shadows camera={{ position: [5, 5, 10], fov: 50 }}>
+        {/* Environment */}
       <Sky sunPosition={[100, 20, 100]} />
       <Lighting />
 
@@ -33,6 +35,8 @@ function App() {
       {/* Camera Controls */}
       <OrbitControls makeDefault maxPolarAngle={Math.PI / 2 - 0.05} />
     </Canvas>
+    <Speedometer />
+  </div>
   );
 }
 

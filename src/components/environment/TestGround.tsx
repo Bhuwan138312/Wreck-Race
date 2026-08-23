@@ -35,6 +35,43 @@ export function TestGround() {
         />
       </RigidBody>
 
+      {/* Speed Bumps for Suspension Testing */}
+      <RigidBody type="fixed" colliders="cuboid" position={[0, 0.025, 5]}>
+        <mesh receiveShadow castShadow>
+          <boxGeometry args={[10, 0.05, 0.5]} />
+          <meshStandardMaterial color="#f0d000" />
+        </mesh>
+      </RigidBody>
+      
+      <RigidBody type="fixed" colliders="cuboid" position={[0, 0.04, 10]}>
+        <mesh receiveShadow castShadow>
+          <boxGeometry args={[10, 0.08, 0.6]} />
+          <meshStandardMaterial color="#f0d000" />
+        </mesh>
+      </RigidBody>
+      
+      <RigidBody type="fixed" colliders="cuboid" position={[0, 0.06, 15]}>
+        <mesh receiveShadow castShadow>
+          <boxGeometry args={[10, 0.12, 0.8]} />
+          <meshStandardMaterial color="#f0d000" />
+        </mesh>
+      </RigidBody>
+
+      {/* Asymmetric Bumps to test individual wheel travel */}
+      <RigidBody type="fixed" colliders="cuboid" position={[-2.5, 0.04, -5]}>
+        <mesh receiveShadow castShadow>
+          <boxGeometry args={[3, 0.08, 0.5]} />
+          <meshStandardMaterial color="#ff5555" />
+        </mesh>
+      </RigidBody>
+      
+      <RigidBody type="fixed" colliders="cuboid" position={[2.5, 0.04, -8]}>
+        <mesh receiveShadow castShadow>
+          <boxGeometry args={[3, 0.08, 0.5]} />
+          <meshStandardMaterial color="#ff5555" />
+        </mesh>
+      </RigidBody>
+
       {/* Visual Arena Borders (No Physics) */}
       <mesh receiveShadow castShadow position={[0, wallHeight / 2, size / 2]}>
         <boxGeometry args={[size, wallHeight, wallThickness]} />

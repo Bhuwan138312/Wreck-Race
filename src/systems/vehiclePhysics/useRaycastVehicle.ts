@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 import { useBeforePhysicsStep, useRapier } from '@react-three/rapier';
 import type { RapierRigidBody } from '@react-three/rapier';
 import * as THREE from 'three';
-
+import { vehicleState } from '../../store/vehicleState';
 export interface WheelConfig {
   position: THREE.Vector3; // Local connection point on chassis
   radius: number;
@@ -60,30 +60,37 @@ export function useRaycastVehicle(
     const forwardSpeed = velocityVec.dot(worldForward);
 
     // Calculate target steering angle for visual animation
+    // Speed-sensitive steering: reduce the max steering angle as forward
+    // speed increases. This is standard in real cars and in most car games —
+    // without it, a full steering angle at high speed demands more lateral
+    // grip than the tires can supply, which is what was causing the rear
+    // to slip/drift specifically at higher forward speeds (reverse never
+    // got fast enough to expose the same demand).
+    const baseMaxSteeringAngle = Math.PI / 5.2; // ~34.6 degrees, at low/zero speed
+    const minMaxSteeringAngle = Math.PI / 15; // 12 degrees, at top speed (tighter turning)
+    const speedForMinSteering = 42 / 3.6; // matches maxForwardSpeed (42 km/h)
+
+    const speedFactor01 = THREE.MathUtils.clamp(Math.abs(forwardSpeed) / speedForMinSteering, 0, 1);
+    const maxSteeringAngle = THREE.MathUtils.lerp(baseMaxSteeringAngle, minMaxSteeringAngle, speedFactor01);
+
     let targetSteeringAngle = 0;
-    const maxSteeringAngle = Math.PI / 6; // 30 degrees
     if (config.controls && config.controls.current) {
-       if (config.controls.current.left) targetSteeringAngle = maxSteeringAngle;
-       if (config.controls.current.right) targetSteeringAngle = -maxSteeringAngle;
+      if (config.controls.current.left) targetSteeringAngle = maxSteeringAngle;
+      if (config.controls.current.right) targetSteeringAngle = -maxSteeringAngle;
     }
     const visualSteeringSpeed = 8.0;
 
     // For each wheel
     for (let i = 0; i < config.wheels.length; i++) {
       const wheel = config.wheels[i];
-      // Max ray distance is rest length + wheel radius
       const maxRayDistance = config.suspensionRestLength + wheel.radius;
-
-      // Get wheel world position
       const wheelWorldPos = wheel.position.clone().applyQuaternion(chassisQuat).add(chassisPos);
 
-      // Create ray
       const ray = new rapier.Ray(
         { x: wheelWorldPos.x, y: wheelWorldPos.y, z: wheelWorldPos.z },
         { x: worldDown.x, y: worldDown.y, z: worldDown.z }
       );
 
-      // Exclude the entire chassis RigidBody (including all its colliders) from the raycast
       const hit = world.castRay(ray, maxRayDistance, true, undefined, undefined, undefined, chassis);
 
       let hitDistance = maxRayDistance;
@@ -92,33 +99,24 @@ export function useRaycastVehicle(
       }
 
       if (hitDistance < maxRayDistance) {
-        // Calculate compression (0 = fully extended, >0 = compressed)
-        // Clamp compression so it never exceeds the physical suspension travel
+        // --- Suspension (spring + damper), compression clamped to real travel ---
         const rawCompression = maxRayDistance - hitDistance;
         const compression = Math.max(0, Math.min(rawCompression, config.suspensionRestLength));
 
-        // Calculate suspension velocity
-        // Get velocity of the chassis at the wheel connection point
         const velocityAtPoint = chassis.velocityAtPoint({
           x: wheelWorldPos.x,
           y: wheelWorldPos.y,
-          z: wheelWorldPos.z
+          z: wheelWorldPos.z,
         });
+        const velAtPointVec = new THREE.Vector3(velocityAtPoint.x, velocityAtPoint.y, velocityAtPoint.z);
+        const suspensionVelocity = velAtPointVec.dot(worldUp);
 
-        const velocityVec = new THREE.Vector3(velocityAtPoint.x, velocityAtPoint.y, velocityAtPoint.z);
-        // Project velocity onto the suspension axis (world Up)
-        const suspensionVelocity = velocityVec.dot(worldUp);
-
-        // Calculate forces
         const springForce = config.suspensionStiffness * compression;
         const dampingForce = config.suspensionDamping * suspensionVelocity;
 
         let totalForce = springForce - dampingForce;
+        if (totalForce < 0) totalForce = 0; // suspension only pushes, never pulls
 
-        // Prevent suspension from pulling the car down (force should only push up)
-        if (totalForce < 0) totalForce = 0;
-
-        // Apply force to chassis at the wheel connection point
         const forceVec = worldUp.clone().multiplyScalar(totalForce);
         chassis.applyImpulseAtPoint(
           { x: forceVec.x * world.timestep, y: forceVec.y * world.timestep, z: forceVec.z * world.timestep },
@@ -126,18 +124,37 @@ export function useRaycastVehicle(
           true
         );
 
-        // Simple temporary horizontal friction to prevent sliding on flat ground
-        // Removes the vertical velocity to find pure lateral movement
-        const pointVel = new THREE.Vector3(velocityAtPoint.x, velocityAtPoint.y, velocityAtPoint.z);
-        const verticalVel = worldUp.clone().multiplyScalar(pointVel.dot(worldUp));
-        const lateralVel = pointVel.clone().sub(verticalVel);
+        // --- Lateral tire force (arcade style: kill lateral velocity) ---
+        let currentSteeringAngle = 0;
+        if (wheel.isFrontWheel && wheel.meshRef && wheel.meshRef.current) {
+          currentSteeringAngle = wheel.meshRef.current.rotation.y;
+        }
 
-        // Apply a damping impulse opposite to the lateral velocity
-        const lateralDamping = 5.0;
-        const frictionImpulse = lateralVel.clone().multiplyScalar(-lateralDamping * world.timestep);
+        const wheelForward = worldForward.clone();
+        if (wheel.isFrontWheel) {
+          wheelForward.applyAxisAngle(worldUp, currentSteeringAngle);
+        }
+        const wheelRight = worldUp.clone().cross(wheelForward).normalize();
 
+        const vLat = velAtPointVec.dot(wheelRight);
+
+        // To remove slip/drift, we directly calculate the force needed to stop the
+        // wheel's lateral velocity, providing an "on rails" planted feel.
+        const massPerWheel = chassis.mass() / config.wheels.length;
+        // We use a factor slightly less than 1 (0.8) to prevent physics jitter
+        // when multiple wheels are resolving their lateral constraints at once.
+        const arcadeGripFactor = 0.8;
+        let lateralForce = (-vLat * massPerWheel * arcadeGripFactor) / world.timestep;
+
+        const Fz = Math.max(0, totalForce);
+        // Cap relative to load, using a high effective friction coefficient
+        const tireFrictionCoefficient = 8.0;
+        const maxLateralForce = tireFrictionCoefficient * Fz;
+        lateralForce = THREE.MathUtils.clamp(lateralForce, -maxLateralForce, maxLateralForce);
+
+        const lateralImpulse = wheelRight.clone().multiplyScalar(lateralForce * world.timestep);
         chassis.applyImpulseAtPoint(
-          { x: frictionImpulse.x, y: frictionImpulse.y, z: frictionImpulse.z },
+          { x: lateralImpulse.x, y: lateralImpulse.y, z: lateralImpulse.z },
           { x: wheelWorldPos.x, y: wheelWorldPos.y, z: wheelWorldPos.z },
           true
         );
@@ -146,38 +163,31 @@ export function useRaycastVehicle(
       // Update visual wheel position, steering, and rotation
       if (wheel.meshRef && wheel.meshRef.current) {
         const mesh = wheel.meshRef.current;
-        
-        // Ensure proper Euler order so spinning (X) happens around the steered axis (Y)
+
         if (mesh.rotation.order !== 'YXZ') {
           mesh.rotation.order = 'YXZ';
         }
 
         mesh.position.y = wheel.position.y + wheel.radius - hitDistance;
-        
-        // Visual steering
+
         if (wheel.isFrontWheel) {
-           mesh.rotation.y = THREE.MathUtils.lerp(
-             mesh.rotation.y, 
-             targetSteeringAngle, 
-             visualSteeringSpeed * world.timestep
-           );
+          mesh.rotation.y = THREE.MathUtils.lerp(
+            mesh.rotation.y,
+            targetSteeringAngle,
+            visualSteeringSpeed * world.timestep
+          );
         }
 
-        // Spin the wheel based on actual forward speed
         const angularVelocity = forwardSpeed / wheel.radius;
         mesh.rotation.x += angularVelocity * world.timestep;
       }
 
-      // Update debug raycast lines
       if (debugLinePositions) {
-        const index = i * 6; // 2 points * 3 coords
-        
-        // Start point (mount point on chassis)
+        const index = i * 6;
         debugLinePositions[index] = wheelWorldPos.x;
         debugLinePositions[index + 1] = wheelWorldPos.y;
         debugLinePositions[index + 2] = wheelWorldPos.z;
-        
-        // End point (ground hit point)
+
         const hitPointWorld = wheelWorldPos.clone().add(worldDown.clone().multiplyScalar(hitDistance));
         debugLinePositions[index + 3] = hitPointWorld.x;
         debugLinePositions[index + 4] = hitPointWorld.y;
@@ -185,58 +195,66 @@ export function useRaycastVehicle(
       }
     }
 
-    // --- Basic Arcade Driving Controls ---
+    // --- Basic Arcade Driving Controls (throttle only — steering is now
+    // handled entirely by the lateral tire forces above, not scripted torque) ---
     if (config.controls && config.controls.current) {
-      const { forward, backward, left, right } = config.controls.current;
-      
-      const maxForwardSpeed = 15;
-      const maxReverseSpeed = -8;
-      const acceleration = 25;
-      
+      const { forward, backward } = config.controls.current;
+
+      const maxForwardSpeed = 42 / 3.6; // 42 km/h
+      const maxReverseSpeed = -20 / 3.6; // ~20 km/h reverse
+      const acceleration = 8; // Constant acceleration
+
       let engineForce = 0;
-      
-      // Eased throttle logic: force decreases as car approaches max speed
+
       if (forward) {
-        const speedFactor = Math.max(0, 1 - (forwardSpeed / maxForwardSpeed));
-        engineForce = acceleration * speedFactor;
+        if (forwardSpeed < maxForwardSpeed) {
+          engineForce = acceleration;
+        }
       } else if (backward) {
-        const speedFactor = Math.max(0, 1 - (forwardSpeed / maxReverseSpeed));
-        engineForce = -acceleration * speedFactor;
+        if (forwardSpeed > maxReverseSpeed) {
+          engineForce = -acceleration;
+        }
       } else {
-        // Simple rolling resistance / engine braking when no throttle is applied
-        engineForce = -forwardSpeed * 2.0;
+        // Coasting friction: reduced from 2.0 to 0.5 to let the car roll longer before stopping
+        engineForce = -forwardSpeed * 0.5;
       }
-      
+
       if (Math.abs(engineForce) > 0.01) {
-        // Apply impulse at center of mass
         const forceVec = worldForward.clone().multiplyScalar(engineForce * world.timestep * chassis.mass());
         chassis.applyImpulse(forceVec, true);
       }
-      
-      // Steering logic
-      const turnRate = 2.5; 
-      // Only steer if moving (arcade-style grounded realism)
-      if (Math.abs(forwardSpeed) > 0.5) {
-        let steeringInput = 0;
-        if (left) steeringInput = 1;
-        if (right) steeringInput = -1;
-        
-        // Reverse steering direction if going backwards for natural feel
-        if (forwardSpeed < 0) {
-           steeringInput = -steeringInput;
-        }
 
-        if (steeringInput !== 0) {
-           const torque = steeringInput * turnRate * chassis.mass();
-           // Apply yaw torque around the global Y axis (pitch/roll are locked)
-           chassis.applyTorqueImpulse({ x: 0, y: torque * world.timestep, z: 0 }, true);
-        }
-      }
+      // NOTE: the old "Steering logic" block that applied a direct yaw
+      // torque impulse based on left/right input has been removed.
+      // Turning now emerges entirely from the lateral tire forces above,
+      // which act off-center at each wheel and naturally produce both a
+      // net sideways force and a yaw torque, the same way real tires do.
     }
 
-    // Flag debug lines for rendering update
     if (config.debugLinesRef && config.debugLinesRef.current) {
       config.debugLinesRef.current.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // --- Update UI State ---
+    vehicleState.speed = Math.abs(forwardSpeed) * 3.6; // convert m/s to km/h
+
+    if (config.controls && config.controls.current) {
+      const { forward, backward } = config.controls.current;
+      if (Math.abs(forwardSpeed) < 0.5 && !forward && !backward) {
+        vehicleState.gear = 'P';
+      } else if (forwardSpeed < -0.5 || backward) {
+        vehicleState.gear = 'R';
+      } else {
+        vehicleState.gear = 'D';
+      }
+
+      const maxForwardSpeed = 42 / 3.6;
+      const maxReverseSpeed = -20 / 3.6;
+      
+      // Calculate RPM purely based on speed so it accurately decreases as speed decreases
+      let rpm = 0.1 + (Math.abs(forwardSpeed) / maxForwardSpeed) * 0.9;
+      
+      vehicleState.rpm = Math.min(1, Math.max(0, rpm));
     }
   });
 }
