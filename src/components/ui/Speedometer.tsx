@@ -5,6 +5,7 @@ export function Speedometer() {
   const speedRef = useRef<HTMLSpanElement>(null);
   const gearRef = useRef<HTMLSpanElement>(null);
   const rpmRef = useRef<HTMLDivElement>(null);
+  const resetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let animationFrameId: number;
@@ -12,7 +13,7 @@ export function Speedometer() {
     const updateUI = () => {
       if (speedRef.current) {
         let displaySpeed = Math.round(vehicleState.speed);
-        if (displaySpeed > 42) displaySpeed = 42;
+        // Remove the 42 km/h clamp to allow high-speed vehicles to display correctly
         speedRef.current.innerText = displaySpeed.toString().padStart(2, '0');
       }
       if (gearRef.current) {
@@ -23,7 +24,6 @@ export function Speedometer() {
         else gearRef.current.style.color = '#FFE70C'; // P
       }
       if (rpmRef.current) {
-        const speed = vehicleState.speed;
         let displayRpm = vehicleState.rpm;
 
         // Rev limiter animation: bounce between 97% and 100% when at max RPM
@@ -37,14 +37,21 @@ export function Speedometer() {
 
         rpmRef.current.style.width = `${displayRpm * 100}%`;
 
-        if (speed >= 35) {
+        // Color based on relative RPM instead of hardcoded speed numbers
+        if (displayRpm >= 0.85) {
           rpmRef.current.style.backgroundColor = '#FF1414';
-        } else if (speed >= 20) {
+        } else if (displayRpm >= 0.5) {
           rpmRef.current.style.backgroundColor = '#FF870E';
         } else {
           rpmRef.current.style.backgroundColor = '#3A9419';
         }
       }
+      
+      if (resetRef.current) {
+        resetRef.current.style.opacity = vehicleState.isFlipped ? '1' : '0';
+        resetRef.current.style.pointerEvents = vehicleState.isFlipped ? 'auto' : 'none';
+      }
+      
       animationFrameId = requestAnimationFrame(updateUI);
     };
 
@@ -63,8 +70,24 @@ export function Speedometer() {
       flexDirection: 'column',
       alignItems: 'flex-end',
       userSelect: 'none',
-      pointerEvents: 'none'
+      pointerEvents: 'none',
+      zIndex: 100
     }}>
+      <div ref={resetRef} style={{
+        marginBottom: '20px',
+        padding: '12px 24px',
+        backgroundColor: 'rgba(255, 20, 20, 0.8)',
+        borderRadius: '8px',
+        border: '2px solid white',
+        fontWeight: 'bold',
+        fontSize: '18px',
+        textTransform: 'uppercase',
+        opacity: 0,
+        transition: 'opacity 0.3s ease',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+      }}>
+        Press 'R' to reset
+      </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px' }}>
         <span ref={gearRef} style={{ fontSize: '32px', fontWeight: 'bold' }}>P</span>
         <span ref={speedRef} style={{ fontSize: '80px', fontWeight: '900', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>00</span>

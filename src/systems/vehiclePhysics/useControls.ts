@@ -6,6 +6,7 @@ export function useControls() {
     backward: false,
     left: false,
     right: false,
+    reset: false,
   });
 
   useEffect(() => {
@@ -27,6 +28,9 @@ export function useControls() {
         case 'arrowright':
           controls.current.right = true;
           break;
+        case 'r':
+          controls.current.reset = true;
+          break;
       }
     };
 
@@ -47,6 +51,9 @@ export function useControls() {
         case 'd':
         case 'arrowright':
           controls.current.right = false;
+          break;
+        case 'r':
+          controls.current.reset = false;
           break;
       }
     };

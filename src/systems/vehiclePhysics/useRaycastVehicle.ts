@@ -1,3 +1,4 @@
+import { useRef, useEffect } from 'react';
 import type { RefObject } from 'react';
 import { useBeforePhysicsStep, useRapier } from '@react-three/rapier';
 import type { RapierRigidBody } from '@react-three/rapier';
@@ -21,7 +22,17 @@ export interface RaycastVehicleConfig {
     backward: boolean;
     left: boolean;
     right: boolean;
+    reset: boolean;
   }>;
+  engine?: {
+    maxSpeed: number; // in km/h
+    engineForce: number;
+  };
+  handling?: {
+    baseSteeringAngle?: number;
+    highSpeedSteeringAngle?: number;
+    arcadeGripFactor?: number;
+  };
 }
 
 const localDown = new THREE.Vector3(0, -1, 0);
@@ -32,8 +43,14 @@ export function useRaycastVehicle(
   config: RaycastVehicleConfig
 ) {
   const { rapier } = useRapier();
+  const configRef = useRef(config);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
 
   useBeforePhysicsStep((world) => {
+    const currentConfig = configRef.current;
     const chassis = chassisRef.current;
     if (!chassis) return;
 
@@ -48,8 +65,8 @@ export function useRaycastVehicle(
     const worldUp = localUp.clone().applyQuaternion(chassisQuat);
 
     let debugLinePositions: Float32Array | null = null;
-    if (config.debugLinesRef && config.debugLinesRef.current) {
-      debugLinePositions = config.debugLinesRef.current.geometry.attributes.position.array as Float32Array;
+    if (currentConfig.debugLinesRef && currentConfig.debugLinesRef.current) {
+      debugLinePositions = currentConfig.debugLinesRef.current.geometry.attributes.position.array as Float32Array;
     }
 
     // Calculate common velocity variables
@@ -60,30 +77,32 @@ export function useRaycastVehicle(
     const forwardSpeed = velocityVec.dot(worldForward);
 
     // Calculate target steering angle for visual animation
+    const maxForwardSpeed = (currentConfig.engine?.maxSpeed ?? 42) / 3.6;
+
     // Speed-sensitive steering: reduce the max steering angle as forward
     // speed increases. This is standard in real cars and in most car games —
     // without it, a full steering angle at high speed demands more lateral
     // grip than the tires can supply, which is what was causing the rear
     // to slip/drift specifically at higher forward speeds (reverse never
     // got fast enough to expose the same demand).
-    const baseMaxSteeringAngle = Math.PI / 5.2; // ~34.6 degrees, at low/zero speed
-    const minMaxSteeringAngle = Math.PI / 15; // 12 degrees, at top speed (tighter turning)
-    const speedForMinSteering = 42 / 3.6; // matches maxForwardSpeed (42 km/h)
+    const baseMaxSteeringAngle = currentConfig.handling?.baseSteeringAngle ?? (Math.PI / 5.2);
+    const minMaxSteeringAngle = currentConfig.handling?.highSpeedSteeringAngle ?? (Math.PI / 15);
+    const speedForMinSteering = maxForwardSpeed;
 
     const speedFactor01 = THREE.MathUtils.clamp(Math.abs(forwardSpeed) / speedForMinSteering, 0, 1);
     const maxSteeringAngle = THREE.MathUtils.lerp(baseMaxSteeringAngle, minMaxSteeringAngle, speedFactor01);
 
     let targetSteeringAngle = 0;
-    if (config.controls && config.controls.current) {
-      if (config.controls.current.left) targetSteeringAngle = maxSteeringAngle;
-      if (config.controls.current.right) targetSteeringAngle = -maxSteeringAngle;
+    if (currentConfig.controls && currentConfig.controls.current) {
+      if (currentConfig.controls.current.left) targetSteeringAngle = maxSteeringAngle;
+      if (currentConfig.controls.current.right) targetSteeringAngle = -maxSteeringAngle;
     }
-    const visualSteeringSpeed = 8.0;
+    const visualSteeringSpeed = 3.5;
 
     // For each wheel
-    for (let i = 0; i < config.wheels.length; i++) {
-      const wheel = config.wheels[i];
-      const maxRayDistance = config.suspensionRestLength + wheel.radius;
+    for (let i = 0; i < currentConfig.wheels.length; i++) {
+      const wheel = currentConfig.wheels[i];
+      const maxRayDistance = currentConfig.suspensionRestLength + wheel.radius;
       const wheelWorldPos = wheel.position.clone().applyQuaternion(chassisQuat).add(chassisPos);
 
       const ray = new rapier.Ray(
@@ -101,7 +120,7 @@ export function useRaycastVehicle(
       if (hitDistance < maxRayDistance) {
         // --- Suspension (spring + damper), compression clamped to real travel ---
         const rawCompression = maxRayDistance - hitDistance;
-        const compression = Math.max(0, Math.min(rawCompression, config.suspensionRestLength));
+        const compression = Math.max(0, Math.min(rawCompression, currentConfig.suspensionRestLength));
 
         const velocityAtPoint = chassis.velocityAtPoint({
           x: wheelWorldPos.x,
@@ -111,8 +130,8 @@ export function useRaycastVehicle(
         const velAtPointVec = new THREE.Vector3(velocityAtPoint.x, velocityAtPoint.y, velocityAtPoint.z);
         const suspensionVelocity = velAtPointVec.dot(worldUp);
 
-        const springForce = config.suspensionStiffness * compression;
-        const dampingForce = config.suspensionDamping * suspensionVelocity;
+        const springForce = currentConfig.suspensionStiffness * compression;
+        const dampingForce = currentConfig.suspensionDamping * suspensionVelocity;
 
         let totalForce = springForce - dampingForce;
         if (totalForce < 0) totalForce = 0; // suspension only pushes, never pulls
@@ -140,10 +159,18 @@ export function useRaycastVehicle(
 
         // To remove slip/drift, we directly calculate the force needed to stop the
         // wheel's lateral velocity, providing an "on rails" planted feel.
-        const massPerWheel = chassis.mass() / config.wheels.length;
+        // If the car tilts past ~45 degrees (worldUp.y < 0.7), we aggressively cut lateral grip 
+        // so it loses traction and falls over naturally instead of balancing on two wheels.
+        let tiltGripMultiplier = 1.0;
+        if (worldUp.y < 0.7) {
+          tiltGripMultiplier = Math.max(0, (worldUp.y - 0.2) / 0.5);
+        }
+
+        const massPerWheel = chassis.mass() / currentConfig.wheels.length;
         // We use a factor slightly less than 1 (0.8) to prevent physics jitter
         // when multiple wheels are resolving their lateral constraints at once.
-        const arcadeGripFactor = 0.8;
+        const baseArcadeGrip = currentConfig.handling?.arcadeGripFactor ?? 0.8;
+        const arcadeGripFactor = baseArcadeGrip * tiltGripMultiplier;
         let lateralForce = (-vLat * massPerWheel * arcadeGripFactor) / world.timestep;
 
         const Fz = Math.max(0, totalForce);
@@ -197,12 +224,12 @@ export function useRaycastVehicle(
 
     // --- Basic Arcade Driving Controls (throttle only — steering is now
     // handled entirely by the lateral tire forces above, not scripted torque) ---
-    if (config.controls && config.controls.current) {
-      const { forward, backward } = config.controls.current;
+    if (currentConfig.controls && currentConfig.controls.current) {
+      const { forward, backward } = currentConfig.controls.current;
 
-      const maxForwardSpeed = 42 / 3.6; // 42 km/h
+      const maxForwardSpeed = (currentConfig.engine?.maxSpeed ?? 42) / 3.6;
       const maxReverseSpeed = -20 / 3.6; // ~20 km/h reverse
-      const acceleration = 8; // Constant acceleration
+      const acceleration = currentConfig.engine?.engineForce ?? 8;
 
       let engineForce = 0;
 
@@ -231,30 +258,50 @@ export function useRaycastVehicle(
       // net sideways force and a yaw torque, the same way real tires do.
     }
 
-    if (config.debugLinesRef && config.debugLinesRef.current) {
-      config.debugLinesRef.current.geometry.attributes.position.needsUpdate = true;
+    if (currentConfig.debugLinesRef && currentConfig.debugLinesRef.current) {
+      currentConfig.debugLinesRef.current.geometry.attributes.position.needsUpdate = true;
     }
 
     // --- Update UI State ---
     vehicleState.speed = Math.abs(forwardSpeed) * 3.6; // convert m/s to km/h
 
-    if (config.controls && config.controls.current) {
-      const { forward, backward } = config.controls.current;
+    if (currentConfig.controls && currentConfig.controls.current) {
+      const { forward, backward } = currentConfig.controls.current;
       if (Math.abs(forwardSpeed) < 0.5 && !forward && !backward) {
         vehicleState.gear = 'P';
-      } else if (forwardSpeed < -0.5 || backward) {
+      } else if (forwardSpeed < -0.5 || (backward && forwardSpeed < 0.5)) {
         vehicleState.gear = 'R';
       } else {
         vehicleState.gear = 'D';
       }
 
-      const maxForwardSpeed = 42 / 3.6;
-      const maxReverseSpeed = -20 / 3.6;
-      
+      const maxForwardSpeed = (currentConfig.engine?.maxSpeed ?? 42) / 3.6;
+
       // Calculate RPM purely based on speed so it accurately decreases as speed decreases
       let rpm = 0.1 + (Math.abs(forwardSpeed) / maxForwardSpeed) * 0.9;
-      
+
       vehicleState.rpm = Math.min(1, Math.max(0, rpm));
+    }
+
+    // --- Flip Detection & Reset Logic ---
+    const isFlipped = worldUp.y < 0.2;
+    vehicleState.isFlipped = isFlipped;
+
+    if (currentConfig.controls?.current.reset) {
+      currentConfig.controls.current.reset = false; // Consume input
+
+      // Extract current yaw to keep the vehicle facing the same way
+      const euler = new THREE.Euler().setFromQuaternion(chassisQuat, 'YXZ');
+      const resetQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, euler.y, 0, 'YXZ'));
+
+      chassis.setRotation(resetQuat, true);
+
+      // Nudge up to prevent clipping
+      chassis.setTranslation({ x: chassisPos.x, y: chassisPos.y + 2.0, z: chassisPos.z }, true);
+
+      // Zero out all velocities
+      chassis.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      chassis.setAngvel({ x: 0, y: 0, z: 0 }, true);
     }
   });
 }
